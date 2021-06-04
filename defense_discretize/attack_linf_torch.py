@@ -15,13 +15,49 @@
 """Placeholder for L_{inf} attack."""
 
 import common.framework
+from defense_discretize.task_definition import LINF_THRESHOLD as eps
+import numpy as np
+import torch
+from torch import nn
+
+
+def get_thermometer_gradient(model, x, y):
+    x_tensor = torch.tensor(x, requires_grad=True)
+    shape = x_tensor.shape
+    y = torch.LongTensor(y)
+    thresholds = np.arange(0, 1, 0.05) + 0.05
+    threshold_tensor = torch.tensor(thresholds, dtype=x_tensor.dtype)
+    x_sub_threshold = (
+        -x_tensor[:, :, None, :, :] + threshold_tensor[None, None, :, None, None]
+    )
+    x_reshaped = torch.reshape(
+        x_sub_threshold, [-1, shape[1] * len(thresholds), shape[2], shape[3]]
+    )
+    x_sigmoid = torch.sigmoid(x_reshaped * 1000)
+    y_pred = model.convnet(x_sigmoid)
+    loss = nn.NLLLoss()(torch.log(y_pred) + 1e-14, y)
+    loss.backward()
+    gradient = x_tensor.grad.detach().numpy()
+    return gradient
 
 
 class LinfAttack(common.framework.Attack):
-
     def attack(self, model, x, y):
+        x = torch.tensor(x)
+        x_orig = torch.tensor(x)
 
-        return x
+        steps = 10
+        eps_step = eps / 2
+        for i in range(steps):
+            print(i)
+            x.requires_grad = True
+            gradient = get_thermometer_gradient(model, x, y)
+            x = x.detach() + np.sign(gradient) * eps_step
+            x = torch.max(torch.min(x, x_orig + eps), x_orig - eps)
+            x = torch.clip(x, 0.0, 1.0)
+
+        return x.detach().numpy()
+
 
 # # If writing attack which operates on batch of examples is too complicated
 # # then remove LinfAttack and uncommend LinfAttackNonBatched from below:
